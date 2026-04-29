@@ -1,0 +1,28 @@
+name: CI (pkgwarden-cli)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Sync and lint
+        working-directory: .
+        run: |
+          uv sync --all-extras --locked
+          uv run ruff check src tests
+          uv run ruff format --check src tests
+          uv run pyright
+
+      - name: Tests
+        run: uv run pytest

@@ -1,0 +1,73 @@
+name: Release pw
+
+on:
+  push:
+    tags: ["pw-v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            triple: x86_64-apple-darwin
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build PyApp (tape)
+        run: |
+          set -euo pipefail
+          chmod +x install/build_pyapp.sh
+          install/build_pyapp.sh tape "pw-${{ matrix.triple }}"
+          test -f "pw-${{ matrix.triple }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pw-${{ matrix.triple }}
+          path: pw-${{ matrix.triple }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: pw-*
+          merge-multiple: true
+
+      - name: Assemble release files
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          mv artifacts/pw-* upload/
+          (cd upload && sha256sum pw-* > SHA256SUMS)
+          cp install/install.sh upload/install.sh
+          sed -i "s/__PW_RELEASE_TAG__/${TAG}/g" upload/install.sh
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: upload/*
