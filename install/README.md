@@ -1,22 +1,39 @@
-# Install `pw` from GitHub Releases
+# Installing `pw` from GitHub Releases
 
-GitHub’s `…/releases/latest/download/install.sh` URL only resolves once the **current “Latest” GitHub Release** includes a file named **`install.sh`**. That file is uploaded by the **Release pw** workflow (not created automatically from a git tag).
+Each release publishes a standalone `pw` binary per platform, a `SHA256SUMS` file, and an
+`install.sh` pinned to that release.
 
-## Install (recommended, after CI has published)
+## Install the latest release
 
 ```bash
 curl -LsSf "https://github.com/pkgwarden/pkgwarden_cli/releases/latest/download/install.sh" | sh
 ```
 
-Wait for **Actions → Release pw** to finish on `pkgwarden/pkgwarden_cli` after a mirror or tag push. If you see **404** here, the release assets are not published yet (or “Latest” points at an empty release).
-
 ## Pin a version
 
+Use the tag string from the [releases page](https://github.com/pkgwarden/pkgwarden_cli/releases):
+
 ```bash
-curl -LsSf "https://github.com/pkgwarden/pkgwarden_cli/releases/download/pw-v0.1.0/install.sh" | sh
+curl -LsSf "https://github.com/pkgwarden/pkgwarden_cli/releases/download/pw-vX.Y.Z/install.sh" | sh
 ```
 
-Use the same tag string as the GitHub Release (for example `pw-v0.1.0`).
+## What the installer does
+
+1. Detects your platform and picks the matching asset: `pw-x86_64-unknown-linux-gnu`,
+   `pw-aarch64-unknown-linux-gnu`, `pw-x86_64-apple-darwin`, or `pw-aarch64-apple-darwin`.
+   Linux and macOS are supported; there is no Windows build yet.
+2. Downloads that asset and the release's `SHA256SUMS`, and verifies the checksum before
+   installing. A mismatch aborts the install.
+3. Installs the binary to `~/.local/bin/pw`, and tells you to add that directory to `PATH` if it
+   is not already there.
+
+Environment variables:
+
+| Variable | Effect |
+| --- | --- |
+| `PKGWARDEN_INSTALL_DIR` | Install somewhere other than `~/.local/bin` |
+| `PKGWARDEN_VERSION` | Release tag to install, when running a copy of `install.sh` that is not pinned to a release |
+| `PKGWARDEN_GITHUB_REPO` | Source repository, for mirrors of the public releases |
 
 ## Verify the install
 
@@ -27,7 +44,7 @@ pw --help
 
 ## Uninstall
 
-Remove the `pw` binary from wherever you installed it (commonly `~/.local/bin/pw`), then remove config if you want a clean slate:
+Remove the binary, and the configuration directory if you want a clean slate:
 
 ```bash
 rm -f ~/.local/bin/pw

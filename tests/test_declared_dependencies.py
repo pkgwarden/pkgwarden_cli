@@ -6,15 +6,16 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+CLI_ROOT = Path(__file__).resolve().parents[1]
 FIRST_PARTY_MODULES = {"pkgwarden_cli", "pkgwarden_cli_enterprise"}
 
 # Both wheels are installed into the one embedded interpreter that becomes the pw binary
 # (scripts/prepare_pyapp_enterprise_distribution.py), so an undeclared import in either
-# package breaks the same binary.
+# package breaks the same binary. The enterprise project is a sibling of this one in the
+# monorepo and absent from the public standalone mirror of pkgwarden-cli.
 PACKAGED_PROJECTS = [
-    REPO_ROOT / "pkgwarden-cli",
-    REPO_ROOT / "pkgwarden-cli-enterprise",
+    CLI_ROOT,
+    CLI_ROOT.parent / "pkgwarden-cli-enterprise",
 ]
 
 # Distributions whose import name differs from the package name; declared-vs-imported
@@ -50,6 +51,8 @@ def test_every_third_party_import_is_a_declared_dependency(project_root: Path) -
     directly but inherited transitively (click, via typer) is missing at runtime there while
     every local venv still resolves it -- a break no unit test or local run can see. Only
     static imports are checked; a dynamic importlib.import_module would slip past this."""
+    if not project_root.is_dir():
+        pytest.skip(f"{project_root.name} is not checked out beside this project")
     source_root = next((project_root / "src").iterdir())
     third_party = {
         module

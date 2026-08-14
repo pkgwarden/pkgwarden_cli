@@ -4,9 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pkgwarden-cli"
-version = "0.2.1"
-description = "Command-line client for pkgwarden airgapped API"
+version = "0.2.2"
+description = "pkgwarden CLI (pw): route package installs through your pkgwarden gate and manage CVE exceptions"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.13"
 dependencies = [
     "click>=8.1.0",

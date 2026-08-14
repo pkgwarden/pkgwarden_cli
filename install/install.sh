@@ -5,11 +5,18 @@ set -eu
 PKGWARDEN_GITHUB_REPO="${PKGWARDEN_GITHUB_REPO:-pkgwarden/pkgwarden_cli}"
 TAG="${PKGWARDEN_VERSION:-__PW_RELEASE_TAG__}"
 
-if [ "$TAG" = "__PW_RELEASE_TAG__" ]; then
-  echo "Set PKGWARDEN_VERSION to a release tag (for example pw-v0.1.0), or use the" >&2
-  echo "install.sh asset attached to that GitHub Release (it is pinned to the tag)." >&2
-  exit 1
-fi
+# The release workflow substitutes the placeholder above with the real tag, globally, so a
+# literal comparison against the placeholder would be substituted too and always match,
+# rejecting every pinned copy. Check the tag's shape instead (release tags are pw-v*).
+case "$TAG" in
+  pw-v*) ;;
+  *)
+    echo "install.sh: this copy is not pinned to a release." >&2
+    echo "Set PKGWARDEN_VERSION to a release tag (for example pw-v0.2.1), or use the" >&2
+    echo "install.sh asset attached to that GitHub Release (it is pinned to the tag)." >&2
+    exit 1
+    ;;
+esac
 
 norm_arch() {
   case "$(uname -m)" in

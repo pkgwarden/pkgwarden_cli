@@ -1,11 +1,16 @@
 import json
+from importlib.metadata import entry_points
 from pathlib import Path
 
 import httpx
+import pytest
 from typer.testing import CliRunner
 
 from pkgwarden_cli import http_client as http_mod
 from pkgwarden_cli import main as main_module
+from pkgwarden_cli import plugin_loader
+
+ENTERPRISE_PLUGIN_INSTALLED = bool(entry_points(group=plugin_loader.ENTRY_POINT_GROUP))
 
 
 def _gate_env(tmp_path: Path, monkeypatch) -> None:
@@ -59,6 +64,10 @@ def test_gate_exception_add_posts_body(tmp_path: Path, monkeypatch) -> None:
     assert captured["json"] == {"vulnerability_id": "CVE-2026-1", "reason": "not applicable"}
 
 
+@pytest.mark.skipif(
+    not ENTERPRISE_PLUGIN_INSTALLED,
+    reason="enterprise mode is served by the pkgwarden-cli-enterprise plugin, which is absent",
+)
 def test_gate_exception_list_uses_enterprise_handler_in_enterprise_mode(
     tmp_path: Path, monkeypatch
 ) -> None:
