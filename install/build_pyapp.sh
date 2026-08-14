@@ -21,7 +21,7 @@ export PYAPP_PROJECT_VERSION="$(
 )"
 uv build -q
 REPO_ROOT="$(cd "${CLI_ROOT}/.." && pwd)"
-CORE_WHL="$(uv run --with packaging python "${REPO_ROOT}/scripts/select_latest_wheel.py" dist 'pkgwarden_cli-*.whl' pkgwarden_cli)"
+CORE_WHL="$(uv run --with packaging python "${SCRIPT_DIR}/select_latest_wheel.py" dist 'pkgwarden_cli-*.whl' pkgwarden_cli)"
 if [[ ! -f "${CORE_WHL}" ]]; then
   echo "missing core wheel under ${CLI_ROOT}/dist" >&2
   exit 1
@@ -54,7 +54,7 @@ elif [[ "${MODE}" == "enterprise" ]]; then
   fi
   cd "${ENT_ROOT}"
   uv build -q
-  ENT_WHL="$(uv run --with packaging python "${REPO_ROOT}/scripts/select_latest_wheel.py" dist 'pkgwarden_cli_enterprise-*.whl' pkgwarden_cli_enterprise)"
+  ENT_WHL="$(uv run --with packaging python "${SCRIPT_DIR}/select_latest_wheel.py" dist 'pkgwarden_cli_enterprise-*.whl' pkgwarden_cli_enterprise)"
   if [[ ! -f "${ENT_WHL}" ]]; then
     echo "missing enterprise wheel under ${ENT_ROOT}/dist" >&2
     exit 1
