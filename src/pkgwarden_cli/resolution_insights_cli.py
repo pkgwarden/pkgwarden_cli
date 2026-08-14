@@ -16,6 +16,7 @@ def resolution_insights(
         help="pypi or npm (airgapped path requires enterprise plugin and mode=enterprise)",
     ),
 ) -> None:
+    """Explain how the CVE-free resolution index treats a package."""
     runtime: CliRuntime = ctx.find_root().obj["runtime"]
     if ecosystem not in ("pypi", "npm"):
         raise typer.BadParameter(f"Unknown ecosystem {ecosystem!r}; use pypi or npm")
@@ -24,16 +25,23 @@ def resolution_insights(
         raise typer.BadParameter("Package name must not be empty")
     if ecosystem == "pypi" and "/" in name:
         raise typer.BadParameter("PyPI package name must be a single segment without '/'")
-    impl = enterprise_hooks.get_resolution_insights_impl()
-    if impl is not None and runtime.config.mode == "enterprise":
+    if runtime.config.mode == "enterprise":
+        impl = enterprise_hooks.get_resolution_insights_impl()
+        if impl is None:
+            typer.echo(
+                "pw resolution-insights: enterprise mode needs the airgapped API, but the "
+                "pkgwarden-cli-enterprise plugin is not installed.",
+                err=True,
+            )
+            raise typer.Exit(1)
         impl(runtime, name, ecosystem)
         return
     try:
-        token = http_client.tape_bearer_token(runtime.config)
+        token = http_client.gate_bearer_token(runtime.config)
     except ValueError as err:
         typer.echo(str(err), err=True)
         raise typer.Exit(1) from err
-    client = http_client.build_tape_resolution_client(
+    client = http_client.build_gate_resolution_client(
         api_base=runtime.config.api_base,
         bearer_token=token,
         timeout=runtime.timeout,

@@ -3,18 +3,18 @@ import tomllib
 from pathlib import Path
 from typing import Literal
 
-TokenType = Literal["user", "project", "tape", "mirror"]
+TokenType = Literal["user", "project", "gate", "mirror"]
 
-SUPPORTED_TOKEN_TYPES: tuple[TokenType, ...] = ("user", "project", "tape", "mirror")
+SUPPORTED_TOKEN_TYPES: tuple[TokenType, ...] = ("user", "project", "gate", "mirror")
+
+
+def config_home() -> Path:
+    override = os.environ.get("XDG_CONFIG_HOME")
+    return Path(override) if override else Path.home() / ".config"
 
 
 def credentials_path() -> Path:
-    config_home = os.environ.get("XDG_CONFIG_HOME")
-    if config_home:
-        base = Path(config_home)
-    else:
-        base = Path.home() / ".config"
-    return base / "pkgwarden" / "credentials.toml"
+    return config_home() / "pkgwarden" / "credentials.toml"
 
 
 def load_all() -> dict[str, dict[str, str]]:

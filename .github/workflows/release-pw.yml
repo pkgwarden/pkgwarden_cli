@@ -1,11 +1,24 @@
 name: Release pw
 
+# Dispatch-only on purpose (same rule as the companion's release workflow): the monorepo
+# mirror pushes the pw-v* tag on snapshot runs too, and a tag-push trigger would both
+# publish those and race the mirror's own dispatch into two concurrent releases of one tag.
 on:
-  push:
-    tags: ["pw-v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (example: pw-v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+# Never cancel a publish in flight, and never run two for the same tag: a half-finished
+# release leaves partial assets that the retry then collides with.
+concurrency:
+  group: release-pw-${{ inputs.tag }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -24,19 +37,21 @@ jobs:
           - os: macos-latest
             triple: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v8.0.0
         with:
           enable-cache: true
 
-      - name: Build PyApp (tape)
+      - name: Build PyApp (gate)
         run: |
           set -euo pipefail
           chmod +x install/build_pyapp.sh
-          install/build_pyapp.sh tape "pw-${{ matrix.triple }}"
+          install/build_pyapp.sh gate "pw-${{ matrix.triple }}"
           test -f "pw-${{ matrix.triple }}"
 
       - uses: actions/upload-artifact@v4
@@ -48,7 +63,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -58,7 +75,7 @@ jobs:
 
       - name: Assemble release files
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           mkdir -p upload
@@ -69,5 +86,5 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: upload/*

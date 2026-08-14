@@ -89,20 +89,54 @@ def sync_command(manager: PackageManager) -> list[str]:
             return ["yarn", "install"]
 
 
-def add_command(manager: PackageManager, package: str) -> list[str]:
+def _group_flags(manager: PackageManager, dev: bool, group: str | None) -> list[str]:
+    if not dev and group is None:
+        return []
     match manager:
         case "uv":
-            return ["uv", "add", package]
+            return ["--dev"] if dev else ["--group", str(group)]
         case "poetry":
-            return ["poetry", "add", package]
+            return ["--group", "dev" if dev else str(group)]
+        case "pnpm" | "npm" | "yarn":
+            if group is not None:
+                raise ValueError(f"{manager} has no named dependency groups; use --dev")
+            return ["--save-dev"]
         case "pip":
-            return ["pip", "install", package]
+            raise ValueError("pip has no dependency groups; drop --dev/--group")
+
+
+def add_command(
+    manager: PackageManager,
+    packages: list[str],
+    dev: bool = False,
+    group: str | None = None,
+) -> list[str]:
+    flags = _group_flags(manager, dev, group)
+    match manager:
+        case "uv":
+            return ["uv", "add", *flags, *packages]
+        case "poetry":
+            return ["poetry", "add", *flags, *packages]
+        case "pip":
+            return ["pip", "install", *packages]
         case "pnpm":
-            return ["pnpm", "add", package]
+            return ["pnpm", "add", *flags, *packages]
         case "npm":
-            return ["npm", "install", package]
+            return ["npm", "install", *flags, *packages]
         case "yarn":
-            return ["yarn", "add", package]
+            return ["yarn", "add", *flags, *packages]
+
+
+def manifest_write_command(
+    manager: PackageManager,
+    packages: list[str],
+    dev: bool = False,
+    group: str | None = None,
+) -> list[str] | None:
+    """Record intent in the manifest without resolving (uv only)."""
+    if manager != "uv":
+        return None
+    return ["uv", "add", "--frozen", *_group_flags(manager, dev, group), *packages]
 
 
 def lock_command(manager: PackageManager) -> list[str]:

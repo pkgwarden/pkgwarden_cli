@@ -15,13 +15,13 @@ def _make_client(handler) -> httpx.Client:
     )
 
 
-def test_fetch_capabilities_returns_tape_deployment() -> None:
+def test_fetch_capabilities_returns_gate_deployment() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/capabilities")
         return httpx.Response(
             200,
             json={
-                "deployment_type": "tape",
+                "deployment_type": "gate",
                 "features": ["cve_scan", "why_blocked"],
                 "min_cli_version": "0.1.0",
             },
@@ -29,7 +29,7 @@ def test_fetch_capabilities_returns_tape_deployment() -> None:
 
     client = _make_client(handler)
     caps = fetch_capabilities(client)
-    assert caps.deployment_type == "tape"
+    assert caps.deployment_type == "gate"
     assert "cve_scan" in caps.features
     assert caps.min_cli_version == "0.1.0"
 

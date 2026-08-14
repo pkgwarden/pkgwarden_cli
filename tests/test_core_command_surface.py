@@ -24,6 +24,7 @@ def _fresh_core_app() -> typer.Typer:
 
     from pkgwarden_cli.add_cli import register_add
     from pkgwarden_cli.auth_cli import register_auth
+    from pkgwarden_cli.ci_cli import register_ci
     from pkgwarden_cli.doctor import register_doctor
     from pkgwarden_cli.init_cli import register_init
     from pkgwarden_cli.sync_cli import register_sync
@@ -35,13 +36,19 @@ def _fresh_core_app() -> typer.Typer:
     register_sync(app)
     register_add(app)
     register_why_blocked(app)
+    register_ci(app)
     return app
+
+
+def test_core_app_exposes_ci_setup() -> None:
+    result = CliRunner().invoke(_fresh_core_app(), ["ci", "setup", "--help"])
+    assert result.exit_code == 0, result.stdout + result.stderr
 
 
 def test_core_app_has_no_enterprise_commands() -> None:
     app = _fresh_core_app()
     runner = CliRunner()
-    for cmd in ("request", "approval", "package", "mirror", "registry"):
+    for cmd in ("request", "approval", "package", "mirror", "registry", "sbom"):
         result = runner.invoke(app, [cmd, "--help"])
         assert result.exit_code != 0, (
             f"core CLI should not know about `{cmd}` without the enterprise plugin"
@@ -56,6 +63,7 @@ def test_core_source_tree_has_no_enterprise_modules() -> None:
         "package_cli.py",
         "mirror_cli.py",
         "registry_cli.py",
+        "sbom_cli.py",
         "bulk_upload_poll.py",
     }
     present = {p.name for p in core_src.iterdir() if p.is_file()}

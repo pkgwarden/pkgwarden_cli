@@ -6,12 +6,15 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from pkgwarden_cli import credentials as credentials_store
+from pkgwarden_cli.modes import SUPPORTED_MODES, CliMode
 from pkgwarden_cli.urls import normalize_api_base
 
-CliMode = Literal["tape", "enterprise"]
 PackageManager = Literal["uv", "poetry", "pip", "pnpm", "npm", "yarn"]
 
-SUPPORTED_MODES: tuple[CliMode, ...] = ("tape", "enterprise")
+MISSING_API_URL_MESSAGE = (
+    "Set PKGWARDEN_API_URL, pass --api-url, or define api_url in .pkgwarden.toml"
+)
+
 SUPPORTED_PACKAGE_MANAGERS: tuple[PackageManager, ...] = (
     "uv",
     "poetry",
@@ -27,7 +30,7 @@ class CliConfig(BaseModel):
     mode: CliMode | None = None
     user_token: str | None = None
     project_token: str | None = None
-    tape_token: str | None = None
+    gate_token: str | None = None
     project_id: str | None = None
     package_manager: PackageManager | None = None
     mirror_token: str | None = Field(
@@ -36,7 +39,15 @@ class CliConfig(BaseModel):
     )
 
 
-def _find_pkgwarden_toml(start: Path) -> Path | None:
+def stripped_or_none(value: str | None) -> str | None:
+    """Empty and whitespace-only values count as unset, CLI-wide."""
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
+def find_pkgwarden_toml(start: Path) -> Path | None:
     for directory in [start, *start.parents]:
         candidate = directory / ".pkgwarden.toml"
         if candidate.is_file():
@@ -53,14 +64,23 @@ def _read_optional_string(data: dict[str, object], key: str, source: Path) -> st
     return raw
 
 
-def _validate_mode(value: str | None, *, source: str) -> CliMode | None:
+def _normalize_mode(value: str | None) -> CliMode | None:
     if value is None:
         return None
     if value not in SUPPORTED_MODES:
         raise ValueError(
-            f"Invalid mode {value!r} in {source}; expected one of {', '.join(SUPPORTED_MODES)}",
+            f"Invalid mode {value!r}; expected one of {', '.join(SUPPORTED_MODES)}",
         )
     return value  # type: ignore[return-value]
+
+
+def _validate_mode(value: str | None, *, source: str) -> CliMode | None:
+    if value is None:
+        return None
+    try:
+        return _normalize_mode(value)
+    except ValueError as error:
+        raise ValueError(f"Invalid mode in {source}: {error}") from error
 
 
 def _validate_package_manager(
@@ -85,7 +105,7 @@ def load_cli_config(
     project_id_override: str | None = None,
 ) -> CliConfig:
     root = cwd or Path.cwd()
-    toml_path = _find_pkgwarden_toml(root)
+    toml_path = find_pkgwarden_toml(root)
     file_api: str | None = None
     file_project_id: str | None = None
     file_mode: CliMode | None = None
@@ -106,11 +126,13 @@ def load_cli_config(
         )
 
     env_api = os.environ.get("PKGWARDEN_API_URL")
-    raw_url = api_url_override or env_api or file_api
-    if not raw_url:
-        raise ValueError(
-            "Set PKGWARDEN_API_URL, pass --api-url, or define api_url in .pkgwarden.toml",
-        )
+    raw_url = (
+        stripped_or_none(api_url_override)
+        or stripped_or_none(env_api)
+        or stripped_or_none(file_api)
+    )
+    if raw_url is None:
+        raise ValueError(MISSING_API_URL_MESSAGE)
 
     project_id = os.environ.get("PKGWARDEN_PROJECT_ID") or file_project_id or None
     if project_id_override is not None:
@@ -129,9 +151,9 @@ def load_cli_config(
         api_base,
         "project",
     )
-    tape_token = os.environ.get("PKGWARDEN_TAPE_TOKEN") or credentials_store.load_token(
+    gate_token = os.environ.get("PKGWARDEN_GATE_TOKEN") or credentials_store.load_token(
         api_base,
-        "tape",
+        "gate",
     )
     mirror_token = (
         os.environ.get("PKGWARDEN_MIRROR_TOKEN")
@@ -143,7 +165,7 @@ def load_cli_config(
         mode=env_mode or file_mode,
         user_token=user_token,
         project_token=project_token,
-        tape_token=tape_token,
+        gate_token=gate_token,
         project_id=project_id,
         package_manager=env_manager or file_manager,
         mirror_token=mirror_token,

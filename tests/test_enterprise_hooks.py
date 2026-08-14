@@ -42,27 +42,38 @@ def test_add_fallback_returns_none_by_default() -> None:
 
 
 def test_register_add_fallback_roundtrip(tmp_path: Path) -> None:
-    def fallback(runtime: CliRuntime, manager: str, package: str, version: str) -> bool:
-        return version == "0.27.0"
+    def fallback(
+        runtime: CliRuntime, manager: str, package: str, version: str, extras: list[str]
+    ) -> enterprise_hooks.EnterpriseAddOutcome | None:
+        if version != "0.27.0":
+            return None
+        return enterprise_hooks.EnterpriseAddOutcome(
+            package=package, version=version, status="pending"
+        )
 
     enterprise_hooks.register_add_fallback(fallback)
     resolved = enterprise_hooks.get_add_fallback()
     assert resolved is fallback
-    assert fallback(_runtime(), "uv", "httpx", "0.27.0") is True
+    outcome = fallback(_runtime(), "uv", "httpx", "0.27.0", [])
+    assert outcome is not None
+    assert outcome.package == "httpx"
 
 
 def test_reset_clears_registrations() -> None:
     def sync_fb(runtime: CliRuntime, manager: str, cwd: Path) -> bool:
         return False
 
-    def add_fb(runtime: CliRuntime, manager: str, package: str, version: str) -> bool:
-        return False
+    def add_fb(
+        runtime: CliRuntime, manager: str, package: str, version: str, extras: list[str]
+    ) -> enterprise_hooks.EnterpriseAddOutcome | None:
+        return None
 
     enterprise_hooks.register_sync_fallback(sync_fb)
     enterprise_hooks.register_add_fallback(add_fb)
     enterprise_hooks.reset()
     assert enterprise_hooks.get_sync_fallback() is None
     assert enterprise_hooks.get_add_fallback() is None
+    assert enterprise_hooks.get_add_native_skip_check() is None
 
 
 def test_register_twice_overrides_previous() -> None:

@@ -3,7 +3,20 @@ from pathlib import Path
 
 import pytest
 
-from pkgwarden_cli.config import CliConfig, load_cli_config
+from pkgwarden_cli.config import (
+    CliConfig,
+    find_pkgwarden_toml,
+    load_cli_config,
+    stripped_or_none,
+)
+
+
+class PathWithoutAncestors(Path):
+    """Bounds the walk-up to the path itself, keeping tests hermetic to tmp_path."""
+
+    @property
+    def parents(self) -> tuple[Path, ...]:  # type: ignore[override]
+        return ()
 
 
 def test_load_cli_config_from_env_only(tmp_path: Path, monkeypatch) -> None:
@@ -80,13 +93,13 @@ def test_load_cli_config_reads_mode_and_package_manager_from_toml(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("PKGWARDEN_API_URL", "https://tape.test/api/v1")
+    monkeypatch.setenv("PKGWARDEN_API_URL", "https://gate.test/api/v1")
     (tmp_path / ".pkgwarden.toml").write_text(
-        'api_url = "https://ignored/api/v1"\nmode = "tape"\npackage_manager = "uv"\n',
+        'api_url = "https://ignored/api/v1"\nmode = "gate"\npackage_manager = "uv"\n',
         encoding="utf-8",
     )
     cfg = load_cli_config(cwd=tmp_path)
-    assert cfg.mode == "tape"
+    assert cfg.mode == "gate"
     assert cfg.package_manager == "uv"
 
 
@@ -104,16 +117,75 @@ def test_load_cli_config_rejects_unknown_package_manager(tmp_path: Path, monkeyp
         load_cli_config(cwd=tmp_path)
 
 
-def test_load_cli_config_tape_token_from_env(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("PKGWARDEN_API_URL", "https://tape.test/api/v1")
-    monkeypatch.setenv("PKGWARDEN_TAPE_TOKEN", "pyf_tape_abc")
+def test_load_cli_config_gate_token_from_env(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("PKGWARDEN_API_URL", "https://gate.test/api/v1")
+    monkeypatch.setenv("PKGWARDEN_GATE_TOKEN", "pyf_gate_abc")
     cfg = load_cli_config(cwd=tmp_path)
-    assert cfg.tape_token == "pyf_tape_abc"
+    assert cfg.gate_token == "pyf_gate_abc"
+
+
+def test_find_pkgwarden_toml_walks_up_to_ancestor(tmp_path: Path) -> None:
+    (tmp_path / ".pkgwarden.toml").write_text('api_url = "https://a/api/v1"\n', encoding="utf-8")
+    nested = tmp_path / "sub" / "deeper"
+    nested.mkdir(parents=True)
+    assert find_pkgwarden_toml(nested) == tmp_path / ".pkgwarden.toml"
+
+
+def test_find_pkgwarden_toml_prefers_nearest_ancestor(tmp_path: Path) -> None:
+    (tmp_path / ".pkgwarden.toml").write_text('api_url = "https://far/api/v1"\n', encoding="utf-8")
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    near_toml = nested / ".pkgwarden.toml"
+    near_toml.write_text('api_url = "https://near/api/v1"\n', encoding="utf-8")
+    assert find_pkgwarden_toml(nested / "deeper") == near_toml
+
+
+def test_find_pkgwarden_toml_returns_none_when_absent(tmp_path: Path) -> None:
+    assert find_pkgwarden_toml(PathWithoutAncestors(tmp_path)) is None
 
 
 def test_load_cli_config_env_overrides_toml_mode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("PKGWARDEN_API_URL", "https://a/api/v1")
     monkeypatch.setenv("PKGWARDEN_MODE", "enterprise")
-    (tmp_path / ".pkgwarden.toml").write_text('mode = "tape"\n', encoding="utf-8")
+    (tmp_path / ".pkgwarden.toml").write_text('mode = "gate"\n', encoding="utf-8")
     cfg = load_cli_config(cwd=tmp_path)
     assert cfg.mode == "enterprise"
+
+
+def test_load_cli_config_treats_whitespace_env_api_url_as_unset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PKGWARDEN_API_URL", "   ")
+    (tmp_path / ".pkgwarden.toml").write_text(
+        'api_url = "https://toml.example/api/v1"\n',
+        encoding="utf-8",
+    )
+    cfg = load_cli_config(cwd=tmp_path)
+    assert cfg.api_base == "https://toml.example/api/v1"
+
+
+def test_load_cli_config_treats_whitespace_override_as_unset(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PKGWARDEN_API_URL", "https://env.example/api/v1")
+    cfg = load_cli_config(cwd=tmp_path, api_url_override="   ")
+    assert cfg.api_base == "https://env.example/api/v1"
+
+
+def test_load_cli_config_rejects_whitespace_toml_api_url_when_only_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PKGWARDEN_API_URL", raising=False)
+    (tmp_path / ".pkgwarden.toml").write_text('api_url = "   "\n', encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\.pkgwarden\.toml"):
+        load_cli_config(cwd=PathWithoutAncestors(tmp_path))
+
+
+def test_stripped_or_none_strips_and_drops_blank_values() -> None:
+    assert stripped_or_none("  https://a/api/v1  ") == "https://a/api/v1"
+    assert stripped_or_none("   ") is None
+    assert stripped_or_none("") is None
+    assert stripped_or_none(None) is None

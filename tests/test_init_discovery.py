@@ -14,15 +14,15 @@ from pkgwarden_cli.init_discovery import (
 def test_parse_dotenv_basic(tmp_path: Path) -> None:
     p = tmp_path / ".env"
     p.write_text(
-        'PKGWARDEN_API_URL=https://x.test/api/v1\n'
-        'export PKGWARDEN_TAPE_TOKEN=tok\n'
+        "PKGWARDEN_API_URL=https://x.test/api/v1\n"
+        "export PKGWARDEN_GATE_TOKEN=tok\n"
         "# comment\n"
         'PKGWARDEN_PROJECT_API_TOKEN="proj"\n',
         encoding="utf-8",
     )
     d = parse_dotenv_file(p)
     assert d["PKGWARDEN_API_URL"] == "https://x.test/api/v1"
-    assert d["PKGWARDEN_TAPE_TOKEN"] == "tok"
+    assert d["PKGWARDEN_GATE_TOKEN"] == "tok"
     assert d["PKGWARDEN_PROJECT_API_TOKEN"] == "proj"
 
 
@@ -42,10 +42,10 @@ def test_effective_project_token_prefers_canonical_name(monkeypatch) -> None:
     assert effective_project_token(env) == "canonical"
 
 
-def test_infer_mode_project_wins_over_tape(monkeypatch) -> None:
+def test_infer_mode_project_wins_over_gate(monkeypatch) -> None:
     env = {
         "PKGWARDEN_PROJECT_TOKEN": "p",
-        "PKGWARDEN_TAPE_TOKEN": "t",
+        "PKGWARDEN_GATE_TOKEN": "t",
     }
     assert infer_mode_from_tokens(env) == "enterprise"
 

@@ -41,6 +41,7 @@ def init(
         help="Non-interactive: use discovered values; error if API URL or package manager missing",
     ),
 ) -> None:
+    """Create .pkgwarden.toml for this project (interactive unless --yes)."""
     cwd = Path.cwd()
     target = cwd / ".pkgwarden.toml"
     if target.exists() and not force:
@@ -127,9 +128,9 @@ def _init_interactive_wizard(ctx: typer.Context, cwd: Path, target: Path, defaul
     api_base = normalize_api_base(api_stripped)
 
     probed_mode = _probe_mode(api_base, ctx)
-    mode_default: str = defaults.mode if defaults.mode is not None else (probed_mode or "tape")
+    mode_default: str = defaults.mode if defaults.mode is not None else (probed_mode or "gate")
     mode_prompt = typer.prompt(
-        "Deployment mode (tape or enterprise)",
+        "Deployment mode (gate or enterprise)",
         default=mode_default,
     )
     if mode_prompt not in SUPPORTED_MODES:

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Public installer: tape-only pw binary from GitHub Releases (see install/README.md).
+# Public installer: gate-only pw binary from GitHub Releases (see install/README.md).
 set -eu
 
 PKGWARDEN_GITHUB_REPO="${PKGWARDEN_GITHUB_REPO:-pkgwarden/pkgwarden_cli}"

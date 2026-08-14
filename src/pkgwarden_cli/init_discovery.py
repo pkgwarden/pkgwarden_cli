@@ -50,8 +50,11 @@ def effective_project_token(env: dict[str, str]) -> str | None:
     return None
 
 
-def effective_tape_token(env: dict[str, str]) -> str | None:
-    for key in ("PKGWARDEN_TAPE_TOKEN", "PKGWARDEN_TAPE_API_TOKEN"):
+def effective_gate_token(env: dict[str, str]) -> str | None:
+    for key in (
+        "PKGWARDEN_GATE_TOKEN",
+        "PKGWARDEN_GATE_API_TOKEN",
+    ):
         value = env.get(key, "").strip()
         if value:
             return value
@@ -61,8 +64,8 @@ def effective_tape_token(env: dict[str, str]) -> str | None:
 def infer_mode_from_tokens(env: dict[str, str]) -> CliMode | None:
     if effective_project_token(env) is not None:
         return "enterprise"
-    if effective_tape_token(env) is not None:
-        return "tape"
+    if effective_gate_token(env) is not None:
+        return "gate"
     return None
 
 
@@ -187,8 +190,8 @@ def build_init_defaults(
         inferred = infer_mode_from_tokens(env)
         if inferred is not None:
             mode = inferred
-            mode_source = "project or tape token (or *_API_TOKEN alias) in environment / .env"
-            notes.append("mode: enterprise with project token env; tape with tape token only")
+            mode_source = "project or gate token (or *_API_TOKEN alias) in environment / .env"
+            notes.append("mode: enterprise with project token env; gate with gate token only only")
 
     manager: PackageManager | None = None
     if package_manager_override is not None:

@@ -10,10 +10,14 @@ from pkgwarden_cli.capabilities import fetch_capabilities
 from pkgwarden_cli.output import emit
 from pkgwarden_cli.package_manager import detect_managers
 from pkgwarden_cli.runtime import CliRuntime
-from pkgwarden_cli.version_info import format_pw_version_line
+from pkgwarden_cli.version_info import (
+    enterprise_distribution_version,
+    format_pw_version_line,
+)
 
 
 def doctor(ctx: typer.Context) -> None:
+    """Check connectivity, tokens, and deployment health; exits 1 when unhealthy."""
     runtime: CliRuntime = ctx.find_root().obj["runtime"]
     cfg = runtime.config
     caps = _probe_capabilities(runtime)
@@ -21,10 +25,12 @@ def doctor(ctx: typer.Context) -> None:
         {"manager": d.manager, "ecosystem": d.ecosystem, "lockfile": d.lockfile}
         for d in detect_managers(Path.cwd())
     ]
+    enterprise_plugin = enterprise_distribution_version() is not None
     summary: dict[str, Any] = {
         "pw": format_pw_version_line(),
         "api_base": cfg.api_base,
         "configured_mode": cfg.mode,
+        "enterprise_plugin_installed": enterprise_plugin,
         "deployment_type": caps.deployment_type,
         "features": list(caps.features),
         "min_cli_version": caps.min_cli_version,
@@ -32,19 +38,44 @@ def doctor(ctx: typer.Context) -> None:
         "detected_managers": detected,
         "has_user_token": bool(cfg.user_token),
         "has_project_token": bool(cfg.project_token),
-        "has_tape_token": bool(cfg.tape_token),
+        "has_gate_token": bool(cfg.gate_token),
         "has_project_id": bool(cfg.project_id),
         "has_mirror_token": bool(cfg.mirror_token or cfg.project_token),
     }
     summary["requests_probe"] = _probe_requests(runtime, cfg)
+    problems = _health_problems(summary, cfg.mode)
+    summary["healthy"] = not problems
     human = _format_human(summary)
+    if problems:
+        human += "\ndoctor: unhealthy — " + "; ".join(problems)
     emit(runtime, human, summary)
+    if problems:
+        raise typer.Exit(1)
+
+
+def _health_problems(summary: dict[str, Any], mode: str | None) -> list[str]:
+    problems: list[str] = []
+    probe = summary["requests_probe"]
+    if probe == "skipped_no_requests_token":
+        if mode == "enterprise":
+            problems.append("no PKGWARDEN_PROJECT_TOKEN or PKGWARDEN_USER_TOKEN for /requests")
+    elif isinstance(probe, dict):
+        if "error" in probe:
+            problems.append(f"API unreachable: {probe['error']}")
+        elif (
+            isinstance(probe.get("status_code"), int)
+            and probe["status_code"] >= 400
+            and probe["status_code"] != 404
+        ):
+            # 404 = endpoint absent (legacy/gate deployments), not a failure
+            problems.append(f"/requests probe returned HTTP {probe['status_code']}")
+    return problems
 
 
 def _probe_capabilities(runtime: CliRuntime):
     client = http_client.build_api_client(
         api_base=runtime.config.api_base,
-        bearer_token=runtime.config.user_token or runtime.config.tape_token or "",
+        bearer_token=runtime.config.user_token or runtime.config.gate_token or "",
         timeout=runtime.timeout,
     )
     try:
@@ -84,6 +115,8 @@ def _format_human(summary: dict[str, Any]) -> str:
         f"api_base: {summary['api_base']}",
         f"deployment_type: {summary['deployment_type']}",
         f"configured_mode: {summary['configured_mode'] or 'unset'}",
+        "enterprise_plugin: "
+        f"{'installed' if summary['enterprise_plugin_installed'] else 'missing'}",
         f"features: {', '.join(summary['features']) if summary['features'] else '(none)'}",
         f"min_cli_version: {summary['min_cli_version'] or 'unset'}",
         f"configured_package_manager: {summary['configured_package_manager'] or 'unset'}",
@@ -93,11 +126,16 @@ def _format_human(summary: dict[str, Any]) -> str:
         lines.append(f"detected_managers: {', '.join(manager_names)}")
     else:
         lines.append("detected_managers: (none)")
+    if summary["deployment_type"] == "enterprise" and not summary["enterprise_plugin_installed"]:
+        lines.append(
+            "hint: install pkgwarden-cli-enterprise from your airgapped /install/pw.sh "
+            "for request/approval commands and sync/add server fallbacks",
+        )
     lines.extend(
         [
             f"user_token: {'set' if summary['has_user_token'] else 'missing'}",
             f"project_token: {'set' if summary['has_project_token'] else 'missing'}",
-            f"tape_token: {'set' if summary['has_tape_token'] else 'missing'}",
+            f"gate_token: {'set' if summary['has_gate_token'] else 'missing'}",
             f"project_id: {'set' if summary['has_project_id'] else 'missing'}",
             f"mirror_token: {'set' if summary['has_mirror_token'] else 'missing'}",
             f"requests_probe: {json.dumps(summary['requests_probe'], indent=2, default=str)}",

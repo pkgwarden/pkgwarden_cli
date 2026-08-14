@@ -3,7 +3,7 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, Field
 
-DeploymentType = Literal["tape", "enterprise", "unknown"]
+DeploymentType = Literal["gate", "enterprise", "unknown"]
 
 
 class Capabilities(BaseModel):
@@ -32,6 +32,6 @@ def fetch_capabilities(client: httpx.Client) -> Capabilities:
     if not isinstance(payload, dict):
         return _UNKNOWN
     deployment = payload.get("deployment_type")
-    if deployment not in ("tape", "enterprise"):
+    if deployment not in ("gate", "enterprise"):
         return _UNKNOWN
     return Capabilities.model_validate(payload)

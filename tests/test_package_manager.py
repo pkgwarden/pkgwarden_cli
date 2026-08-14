@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from pkgwarden_cli.package_manager import (
     ManagerDetection,
     add_command,
@@ -7,6 +9,7 @@ from pkgwarden_cli.package_manager import (
     ecosystem_for_manager,
     lock_command,
     lockfile_for_manager,
+    manifest_write_command,
     sync_command,
 )
 
@@ -101,19 +104,58 @@ def test_sync_command_yarn() -> None:
 
 
 def test_add_command_uv() -> None:
-    assert add_command("uv", "httpx") == ["uv", "add", "httpx"]
+    assert add_command("uv", ["httpx"]) == ["uv", "add", "httpx"]
+
+
+def test_add_command_uv_multi_and_dev() -> None:
+    assert add_command("uv", ["a==1", "b==2"], dev=True) == ["uv", "add", "--dev", "a==1", "b==2"]
+
+
+def test_add_command_uv_named_group() -> None:
+    assert add_command("uv", ["pytest==8.3.4"], group="test") == [
+        "uv",
+        "add",
+        "--group",
+        "test",
+        "pytest==8.3.4",
+    ]
+
+
+def test_add_command_npm_dev_uses_save_dev() -> None:
+    assert add_command("npm", ["chalk@5.3.0"], dev=True) == [
+        "npm",
+        "install",
+        "--save-dev",
+        "chalk@5.3.0",
+    ]
+
+
+def test_add_command_pip_rejects_groups() -> None:
+    with pytest.raises(ValueError, match="pip"):
+        add_command("pip", ["httpx"], dev=True)
+
+
+def test_manifest_write_command_uv_only() -> None:
+    assert manifest_write_command("uv", ["httpx==0.27.0"], dev=True) == [
+        "uv",
+        "add",
+        "--frozen",
+        "--dev",
+        "httpx==0.27.0",
+    ]
+    assert manifest_write_command("poetry", ["httpx==0.27.0"]) is None
 
 
 def test_add_command_pnpm() -> None:
-    assert add_command("pnpm", "lodash") == ["pnpm", "add", "lodash"]
+    assert add_command("pnpm", ["lodash"]) == ["pnpm", "add", "lodash"]
 
 
 def test_add_command_poetry() -> None:
-    assert add_command("poetry", "httpx") == ["poetry", "add", "httpx"]
+    assert add_command("poetry", ["httpx"]) == ["poetry", "add", "httpx"]
 
 
 def test_add_command_pip_uses_install() -> None:
-    assert add_command("pip", "httpx") == ["pip", "install", "httpx"]
+    assert add_command("pip", ["httpx"]) == ["pip", "install", "httpx"]
 
 
 def test_lock_command_uv() -> None:
