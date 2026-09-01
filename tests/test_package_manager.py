@@ -25,9 +25,40 @@ def test_detect_uv_from_lockfile(tmp_path: Path) -> None:
 
 def test_detect_poetry_from_lockfile(tmp_path: Path) -> None:
     (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("[tool.poetry]\n", encoding="utf-8")
     result = detect_managers(tmp_path)
-    assert any(d.manager == "poetry" for d in result)
+    managers = {d.manager for d in result}
+    assert managers == {"poetry"}
+
+
+def test_detect_poetry_lockfile_suppresses_uv_bare_pyproject_fallback(tmp_path: Path) -> None:
+    (tmp_path / "poetry.lock").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[tool.poetry]\nname = "x"\n', encoding="utf-8")
+    result = detect_managers(tmp_path)
+    assert [d.manager for d in result] == ["poetry"]
+
+
+def test_detect_bare_poetry_pyproject_without_lockfile(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('[tool.poetry]\nname = "x"\n', encoding="utf-8")
+    result = detect_managers(tmp_path)
+    assert [d.manager for d in result] == ["poetry"]
+    poetry = result[0]
+    assert poetry.ecosystem == "pypi"
+    assert poetry.lockfile is None
+
+
+def test_detect_bare_pyproject_without_poetry_table_falls_back_to_uv(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+    result = detect_managers(tmp_path)
+    assert [d.manager for d in result] == ["uv"]
+    uv = result[0]
+    assert uv.lockfile is None
+
+
+def test_detect_unparseable_pyproject_falls_back_to_uv_without_crashing(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("not [ valid toml", encoding="utf-8")
+    result = detect_managers(tmp_path)
+    assert [d.manager for d in result] == ["uv"]
 
 
 def test_detect_pip_from_requirements(tmp_path: Path) -> None:

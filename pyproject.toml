@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pkgwarden-cli"
-version = "0.2.2"
+version = "0.3.0"
 description = "pkgwarden CLI (pw): route package installs through your pkgwarden gate and manage CVE exceptions"
 readme = "README.md"
 license = "Apache-2.0"

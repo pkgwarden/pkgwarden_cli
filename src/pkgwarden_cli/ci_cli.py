@@ -8,33 +8,57 @@ steps, so the config has to outlive this process as files plus exported env.
 import os
 import shlex
 from pathlib import Path
+from typing import Self
 from urllib.parse import urlsplit
 
 import typer
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from pkgwarden_cli import credentials
 from pkgwarden_cli.config import CliConfig, PackageManager
 from pkgwarden_cli.http_client import mirror_basic_username
-from pkgwarden_cli.mirror_auth import npm_registry_base, npmrc_for_registry
+from pkgwarden_cli.mirror_auth import (
+    PoetrySource,
+    env_key_fragment,
+    npm_registry_base,
+    npmrc_for_registry,
+    poetry_sources,
+    url_targets_origin,
+)
 from pkgwarden_cli.package_manager import detect_managers, ecosystem_for_manager
 from pkgwarden_cli.runtime import CliRuntime
-from pkgwarden_cli.urls import simple_index_url
+from pkgwarden_cli.urls import mirror_origin_from_api_base, simple_index_url
 
 NETRC_FILENAME = "pkgwarden.netrc"
 NPMRC_FILENAME = "pkgwarden.npmrc"
+TOKEN_FILENAME = "pkgwarden.token"
 YARN_BERRY_MARKER = ".yarnrc.yml"
 
 # Gate accepts an empty Basic password, but netrc syntax needs a non-empty token.
 NETRC_PASSWORD = "x"
 
+# Poetry priorities under which the gate source displaces PyPI rather than sitting beside it.
+# Absent means poetry's own default (primary); "default" is the pre-1.8 spelling of the same.
+GATE_SOURCE_PRIORITIES: frozenset[str | None] = frozenset({None, "primary", "default"})
+
+# The only priority poetry never resolves from implicitly; everything else routes around us.
+OPT_IN_SOURCE_PRIORITY = "explicit"
+
 
 class CiSetupPlan(BaseModel):
-    """What `pw ci setup` configured, minus the token itself."""
+    """What `pw ci setup` configured. `secret_env` values are token-bearing; `env` is not."""
 
     configured: list[PackageManager]
     unsupported: list[str]
     env: dict[str, str]
+    secret_env: dict[str, str] = Field(default_factory=dict)
+    token_path: Path | None = None
+
+    @model_validator(mode="after")
+    def _secret_env_needs_a_token_file(self) -> Self:
+        if self.secret_env and self.token_path is None:
+            raise ValueError("secret_env values are read from token_path, which is unset")
+        return self
 
 
 def ci_config_dir() -> Path:
@@ -62,8 +86,6 @@ def _write_private(path: Path, content: str) -> Path:
 
 
 def _unsupported_reason(manager: PackageManager, cwd: Path) -> str | None:
-    if manager == "poetry":
-        return "poetry: not supported by `pw ci setup`; configure the index in pyproject.toml"
     if manager == "yarn" and (cwd / YARN_BERRY_MARKER).is_file():
         return (
             f"yarn: Yarn Berry ({YARN_BERRY_MARKER} present) is not supported; "
@@ -85,6 +107,65 @@ def _python_env(config: CliConfig, token: str, config_dir: Path) -> dict[str, st
         "UV_DEFAULT_INDEX": index_url,
         "PIP_INDEX_URL": index_url,
     }
+
+
+def _poetry_stanza_message(index_url: str) -> str:
+    return (
+        "pw ci setup: poetry has no gate source in pyproject.toml. Commit this, then re-run:\n"
+        "\n"
+        "[[tool.poetry.source]]\n"
+        'name = "gate"\n'
+        f'url = "{index_url}"\n'
+        'priority = "primary"\n'
+        "\n"
+        "If you have a committed poetry.lock, run `poetry lock` first and commit both files."
+    )
+
+
+def _reject_sources_outside_the_gate(sources: list[PoetrySource], mirror_origin: str) -> None:
+    """Only `explicit` sources are never resolved implicitly; any other one bypasses the gate."""
+    reachable = [
+        source
+        for source in sources
+        if not url_targets_origin(source.url, mirror_origin)
+        and source.priority != OPT_IN_SOURCE_PRIORITY
+    ]
+    if not reachable:
+        return
+    named = ", ".join(f"{source.name} ({source.url})" for source in reachable)
+    typer.echo(
+        f"pw ci setup: pyproject.toml declares poetry sources outside the gate: {named}. "
+        "Poetry can resolve from them, so blocked packages would still install. Set priority = "
+        '"explicit" on each one (or remove it), then re-run.',
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+def _poetry_env(
+    config: CliConfig, token: str, cwd: Path, config_dir: Path
+) -> tuple[dict[str, str], dict[str, str], Path]:
+    mirror_origin = mirror_origin_from_api_base(config.api_base)
+    sources = poetry_sources(cwd / "pyproject.toml")
+    qualifying = [
+        source
+        for source in sources
+        if url_targets_origin(source.url, mirror_origin)
+        and source.priority in GATE_SOURCE_PRIORITIES
+    ]
+    if not qualifying:
+        index_url = simple_index_url(config.api_base, config.mode)
+        typer.echo(_poetry_stanza_message(index_url), err=True)
+        raise typer.Exit(1)
+    _reject_sources_outside_the_gate(sources, mirror_origin)
+    token_path = _write_private(config_dir / TOKEN_FILENAME, token)
+    env: dict[str, str] = {}
+    secret_env: dict[str, str] = {}
+    for source in qualifying:
+        fragment = env_key_fragment(source.name)
+        secret_env[f"POETRY_HTTP_BASIC_{fragment}_USERNAME"] = token
+        env[f"POETRY_HTTP_BASIC_{fragment}_PASSWORD"] = ""
+    return env, secret_env, token_path
 
 
 def _npm_env(config: CliConfig, token: str, config_dir: Path, include_yarn: bool) -> dict[str, str]:
@@ -109,20 +190,35 @@ def build_plan(config: CliConfig, token: str, cwd: Path, config_dir: Path) -> Ci
             continue
         supported.append(detection.manager)
     env: dict[str, str] = {}
-    if any(ecosystem_for_manager(manager) == "pypi" for manager in supported):
+    secret_env: dict[str, str] = {}
+    token_path: Path | None = None
+    if "poetry" in supported:
+        poetry_env, poetry_secret_env, token_path = _poetry_env(config, token, cwd, config_dir)
+        env.update(poetry_env)
+        secret_env.update(poetry_secret_env)
+    if any(manager in ("uv", "pip") for manager in supported):
         env.update(_python_env(config, token, config_dir))
     if any(ecosystem_for_manager(manager) == "npm" for manager in supported):
         env.update(_npm_env(config, token, config_dir, "yarn" in supported))
-    return CiSetupPlan(configured=supported, unsupported=unsupported, env=env)
+    return CiSetupPlan(
+        configured=supported,
+        unsupported=unsupported,
+        env=env,
+        secret_env=secret_env,
+        token_path=token_path,
+    )
 
 
-def _emit_env(env: dict[str, str]) -> None:
+def _emit_env(plan: CiSetupPlan) -> None:
     github_env = os.environ.get("GITHUB_ENV")
     if not github_env:
-        for key, value in env.items():
+        for key, value in plan.env.items():
             typer.echo(f"export {key}={shlex.quote(value)}")
+        for key in plan.secret_env:
+            typer.echo(f'export {key}="$(cat {shlex.quote(str(plan.token_path))})"')
         return
-    injected = [key for key, value in env.items() if "\n" in value or "\r" in value]
+    combined = {**plan.env, **plan.secret_env}
+    injected = [key for key, value in combined.items() if "\n" in value or "\r" in value]
     if injected:
         typer.echo(
             f"pw ci setup: refusing to write {', '.join(injected)} to $GITHUB_ENV: "
@@ -133,7 +229,7 @@ def _emit_env(env: dict[str, str]) -> None:
         raise typer.Exit(1)
     try:
         with Path(github_env).open("a", encoding="utf-8") as handle:
-            handle.writelines(f"{key}={value}\n" for key, value in env.items())
+            handle.writelines(f"{key}={value}\n" for key, value in combined.items())
     except OSError as error:
         typer.echo(f"pw ci setup: cannot append to $GITHUB_ENV ({github_env}): {error}", err=True)
         raise typer.Exit(1) from error
@@ -176,7 +272,7 @@ def setup(ctx: typer.Context) -> None:
     if not plan.configured:
         typer.echo("pw ci setup: nothing could be configured", err=True)
         raise typer.Exit(1)
-    _emit_env(plan.env)
+    _emit_env(plan)
     typer.echo(f"pw ci setup: configured {', '.join(plan.configured)}", err=True)
 
 

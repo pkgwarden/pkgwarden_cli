@@ -10,7 +10,8 @@ from pkgwarden_cli.runtime import CliRuntime
 
 class GateExceptionResponse(BaseModel):
     id: str
-    vulnerability_id: str
+    kind: str = "cve"
+    vulnerability_id: str | None = None
     ecosystem: str | None = None
     package_name: str | None = None
     package_version: str | None = None
@@ -64,13 +65,40 @@ def _format_row(row: GateExceptionResponse) -> str:
     else:
         parts = [part for part in (row.ecosystem, row.package_name, row.package_version) if part]
         scope = "/".join(parts)
-    return f"{row.id}  {row.vulnerability_id}  {scope}  {row.reason}"
+    subject = row.vulnerability_id or "quarantine"
+    return f"{row.id}  {row.kind}  {subject}  {scope}  {row.reason}"
+
+
+def _quarantine_body(
+    *, ecosystem: str | None, package: str | None, version: str | None, reason: str
+) -> dict[str, object]:
+    missing = [
+        flag
+        for flag, value in (
+            ("--ecosystem", ecosystem),
+            ("--package", package),
+            ("--version", version),
+        )
+        if not value
+    ]
+    if missing:
+        raise typer.BadParameter(
+            f"--quarantine rescues one exact version, so {', '.join(missing)} are required"
+        )
+    return {
+        "kind": "quarantine",
+        "reason": reason,
+        **_scope_body(ecosystem=ecosystem, package=package, version=version),
+    }
 
 
 def gate_exception_add(
     ctx: typer.Context,
-    vulnerability_id: str = typer.Option(..., "--vulnerability-id", "-v"),
     reason: str = typer.Option(..., "--reason", "-r"),
+    vulnerability_id: str | None = typer.Option(None, "--vulnerability-id", "-v"),
+    quarantine: bool = typer.Option(
+        False, "--quarantine", help="Release one exact version from the quarantine window"
+    ),
     ecosystem: str | None = typer.Option(None, "--ecosystem", "-e"),
     package: str | None = typer.Option(None, "--package"),
     version: str | None = typer.Option(None, "--version"),
@@ -78,12 +106,24 @@ def gate_exception_add(
     acknowledge_kev: bool = typer.Option(False, "--acknowledge-kev"),
 ) -> None:
     runtime: CliRuntime = ctx.find_root().obj["runtime"]
+    if quarantine and vulnerability_id is not None:
+        raise typer.BadParameter(
+            "--quarantine and --vulnerability-id are different carve-outs; pass only one"
+        )
+    if not quarantine and vulnerability_id is None:
+        raise typer.BadParameter("--vulnerability-id is required (or pass --quarantine)")
     token = _gate_token(runtime)
-    body: dict[str, object] = {
-        "vulnerability_id": vulnerability_id,
-        "reason": reason,
-        **_scope_body(ecosystem=ecosystem, package=package, version=version),
-    }
+    if quarantine:
+        body: dict[str, object] = _quarantine_body(
+            ecosystem=ecosystem, package=package, version=version, reason=reason
+        )
+    else:
+        body = {
+            "kind": "cve",
+            "vulnerability_id": vulnerability_id,
+            "reason": reason,
+            **_scope_body(ecosystem=ecosystem, package=package, version=version),
+        }
     if expires_at:
         body["expires_at"] = expires_at
     if acknowledge_kev:
@@ -179,7 +219,7 @@ EXCEPTION_GROUP: typer.Typer | None = None
 def register_gate_exception(app: typer.Typer) -> None:
     global EXCEPTION_GROUP
     group = typer.Typer(
-        help="CVE exceptions (gate or enterprise; token depends on mode)",
+        help="Resolver carve-outs: CVE exceptions and quarantine rescues (needs a user token)",
         callback=_gate_exception_group_guard,
     )
     group.command("add")(gate_exception_add)

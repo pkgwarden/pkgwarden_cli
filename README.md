@@ -113,8 +113,16 @@ appends `NETRC`, `UV_DEFAULT_INDEX`, `PIP_INDEX_URL`, `NPM_CONFIG_USERCONFIG` (p
 `YARN_NPM_REGISTRY_SERVER` for yarn classic) to `$GITHUB_ENV`. Elsewhere it prints
 `export KEY=VALUE` lines on stdout, so `eval "$(pw ci setup)"` works. The token is never printed.
 
-Poetry and Yarn Berry are not configured automatically: set the index in `pyproject.toml` or
-`npmRegistryServer` in `.yarnrc.yml` yourself.
+Poetry is verified rather than configured: since Poetry reads its index only from
+`pyproject.toml`, `pw ci setup` requires a `[[tool.poetry.source]]` entry pointed at the gate
+(priority absent, `"primary"`, or the legacy `"default"`) already committed there, and exits 1
+printing the exact stanza to add if it is missing. The source is matched by URL rather than by
+name, and the host must match the gate exactly. It also exits 1 when `pyproject.toml` declares another source
+Poetry could resolve from, since that would leave a route around the gate; give such a source
+`priority = "explicit"`. Once the manifest checks out, it exports
+`POETRY_HTTP_BASIC_<SOURCE>_USERNAME`/`_PASSWORD` for the gate source.
+
+Yarn Berry is not configured automatically: set `npmRegistryServer` in `.yarnrc.yml` yourself.
 
 ## Configuration
 

@@ -10,33 +10,94 @@ import tomllib
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+from pydantic import BaseModel
+
 from pkgwarden_cli.config import CliConfig, PackageManager
 from pkgwarden_cli.http_client import mirror_basic_username
 from pkgwarden_cli.urls import mirror_origin_from_api_base, simple_index_url
 
 
-def _uv_index_names(pyproject: Path, mirror_origin: str) -> list[str]:
+class PoetrySource(BaseModel):
+    """One `[[tool.poetry.source]]` entry; `priority` absent means poetry's default (primary)."""
+
+    name: str
+    url: str
+    priority: str | None
+
+
+def url_targets_origin(url: str, origin: str) -> bool:
+    """Whether `url` really lives at `origin`, matching host and path exactly, not by prefix.
+
+    A bare `url.startswith(origin)` would accept `https://gate.example.com.attacker.test/`
+    and `https://gate.example.com@attacker.test/`, so a crafted manifest would pass gate
+    verification while the manager resolved elsewhere -- with our token in the Basic header.
+    """
+    target, expected = urlsplit(url), urlsplit(origin)
+    if (target.scheme.lower(), target.netloc.lower()) != (
+        expected.scheme.lower(),
+        expected.netloc.lower(),
+    ):
+        return False
+    base = expected.path.rstrip("/")
+    return target.path == base or target.path.startswith(f"{base}/")
+
+
+def _manifest_table(pyproject: Path, *keys: str) -> list[object]:
     if not pyproject.is_file():
         return []
     try:
         data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     except (tomllib.TOMLDecodeError, OSError):
         return []
-    indexes = data.get("tool", {}).get("uv", {}).get("index", [])
-    if not isinstance(indexes, list):
-        return []
+    node: object = data
+    for key in keys:
+        if not isinstance(node, dict):
+            return []
+        node = node.get(key, {})
+    return node if isinstance(node, list) else []
+
+
+def _uv_index_names(pyproject: Path, mirror_origin: str) -> list[str]:
     names: list[str] = []
-    for entry in indexes:
+    for entry in _manifest_table(pyproject, "tool", "uv", "index"):
         if not isinstance(entry, dict):
             continue
         name, url = entry.get("name"), entry.get("url")
-        if isinstance(name, str) and isinstance(url, str) and url.startswith(mirror_origin):
+        if (
+            isinstance(name, str)
+            and isinstance(url, str)
+            and url_targets_origin(url, mirror_origin)
+        ):
             names.append(name)
     return names
 
 
-def _env_key_fragment(index_name: str) -> str:
+def env_key_fragment(index_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "_", index_name).upper()
+
+
+def poetry_sources(pyproject: Path) -> list[PoetrySource]:
+    sources: list[PoetrySource] = []
+    for entry in _manifest_table(pyproject, "tool", "poetry", "source"):
+        if not isinstance(entry, dict):
+            continue
+        name, url, priority = entry.get("name"), entry.get("url"), entry.get("priority")
+        if not (isinstance(name, str) and isinstance(url, str)):
+            continue
+        sources.append(
+            PoetrySource(
+                name=name, url=url, priority=priority if isinstance(priority, str) else None
+            )
+        )
+    return sources
+
+
+def poetry_gate_sources(pyproject: Path, mirror_origin: str) -> list[PoetrySource]:
+    return [
+        source
+        for source in poetry_sources(pyproject)
+        if url_targets_origin(source.url, mirror_origin)
+    ]
 
 
 def npm_registry_base(api_base: str) -> str:
@@ -99,9 +160,16 @@ def native_auth_env(config: CliConfig, manager: PackageManager, cwd: Path) -> di
     if manager == "uv":
         env: dict[str, str] = {}
         for name in _uv_index_names(cwd / "pyproject.toml", mirror_origin):
-            fragment = _env_key_fragment(name)
+            fragment = env_key_fragment(name)
             env[f"UV_INDEX_{fragment}_USERNAME"] = username
             env[f"UV_INDEX_{fragment}_PASSWORD"] = ""
+        return env
+    if manager == "poetry":
+        env = {}
+        for source in poetry_gate_sources(cwd / "pyproject.toml", mirror_origin):
+            fragment = env_key_fragment(source.name)
+            env[f"POETRY_HTTP_BASIC_{fragment}_USERNAME"] = username
+            env[f"POETRY_HTTP_BASIC_{fragment}_PASSWORD"] = ""
         return env
     if manager == "pip":
         index_url = simple_index_url(config.api_base, config.mode)

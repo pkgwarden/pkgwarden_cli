@@ -4,9 +4,11 @@ import stat
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from pkgwarden_cli import main as main_module
+from pkgwarden_cli.ci_cli import CiSetupPlan
 
 GATE_TOKEN = "pkgw_gate_secret_token"
 
@@ -52,6 +54,18 @@ def _runner_temp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     runner_temp.mkdir()
     monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
     return runner_temp
+
+
+def _write_poetry_pyproject(root: Path, name: str, url: str, priority: str | None) -> None:
+    priority_line = f'priority = "{priority}"\n' if priority else ""
+    (root / "pyproject.toml").write_text(
+        f'[tool.poetry]\nname = "x"\nversion = "0"\n\n'
+        f'[[tool.poetry.source]]\nname = "{name}"\nurl = "{url}"\n{priority_line}',
+        encoding="utf-8",
+    )
+
+
+GATE_INDEX_URL = "https://index.pkgwarden.com/resolution/simple/"
 
 
 def test_python_manager_writes_netrc_with_restrictive_permissions(
@@ -139,17 +153,122 @@ def test_yarn_berry_is_reported_unsupported_and_not_configured(
 
 def test_poetry_only_project_is_unsupported_and_exits_nonzero(project: Path) -> None:
     (project / "poetry.lock").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text('[tool.poetry]\nname = "x"\n', encoding="utf-8")
     result = _run()
     assert result.exit_code == 1
-    assert "poetry" in result.stderr.lower()
+    assert "[[tool.poetry.source]]" in result.stderr
+    assert GATE_INDEX_URL in result.stderr
 
 
-def test_poetry_alongside_supported_manager_still_succeeds(project: Path) -> None:
+def test_poetry_lockless_project_without_gate_source_exits_nonzero_with_no_uv_pip_env(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "pyproject.toml").write_text('[tool.poetry]\nname = "x"\n', encoding="utf-8")
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 1
+    assert "[[tool.poetry.source]]" in result.stderr
+    variables = _env_lines(github_env)
+    assert "UV_DEFAULT_INDEX" not in variables
+    assert "PIP_INDEX_URL" not in variables
+
+
+def test_poetry_gate_source_supplemental_priority_still_fails(project: Path) -> None:
     (project / "poetry.lock").write_text("", encoding="utf-8")
-    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "supplemental")
+    result = _run()
+    assert result.exit_code == 1
+    assert "[[tool.poetry.source]]" in result.stderr
+
+
+def test_poetry_gate_source_missing_priority_is_accepted(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, None)
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
     result = _run()
     assert result.exit_code == 0, result.stdout + result.stderr
+    assert _env_lines(github_env)["POETRY_HTTP_BASIC_GATE_USERNAME"] == GATE_TOKEN
+
+
+def test_poetry_configured_source_writes_basic_auth_env_to_github_env(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "primary")
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    variables = _env_lines(github_env)
+    assert variables["POETRY_HTTP_BASIC_GATE_USERNAME"] == GATE_TOKEN
+    assert variables["POETRY_HTTP_BASIC_GATE_PASSWORD"] == ""
     assert "poetry" in result.stderr.lower()
+
+
+def test_poetry_configured_source_without_github_env_reads_token_from_file(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "primary")
+    runner_temp = _runner_temp(tmp_path, monkeypatch)
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    token_path = runner_temp / "pkgwarden.token"
+    export_line = next(
+        line for line in result.stdout.splitlines() if "POETRY_HTTP_BASIC_GATE_USERNAME" in line
+    )
+    assert export_line == f'export POETRY_HTTP_BASIC_GATE_USERNAME="$(cat {token_path})"'
+    assert token_path.read_text(encoding="utf-8") == GATE_TOKEN
+    assert stat.S_IMODE(token_path.stat().st_mode) == 0o600
+    assert GATE_TOKEN not in result.stdout
+    assert GATE_TOKEN not in result.stderr
+
+
+def test_poetry_source_name_drives_the_env_key_fragment(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "pkgwarden", GATE_INDEX_URL, "primary")
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert _env_lines(github_env)["POETRY_HTTP_BASIC_PKGWARDEN_USERNAME"] == GATE_TOKEN
+
+
+def test_poetry_alongside_unconfigured_still_fails(project: Path) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text('[tool.poetry]\nname = "x"\n', encoding="utf-8")
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    result = _run()
+    assert result.exit_code == 1
+    assert "[[tool.poetry.source]]" in result.stderr
+
+
+def test_poetry_alongside_supported_manager_both_succeed(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "primary")
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    variables = _env_lines(github_env)
+    assert variables["POETRY_HTTP_BASIC_GATE_USERNAME"] == GATE_TOKEN
+    assert "NPM_CONFIG_USERCONFIG" in variables
+    assert "poetry" in result.stderr.lower()
+    assert "pnpm" in result.stderr.lower()
 
 
 def test_no_manager_detected_exits_nonzero(project: Path) -> None:
@@ -171,6 +290,17 @@ def test_missing_token_exits_with_actionable_message(
 def test_token_never_appears_in_output(project: Path, tmp_path: Path, monkeypatch) -> None:
     (project / "uv.lock").write_text("", encoding="utf-8")
     (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    _runner_temp(tmp_path, monkeypatch)
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert GATE_TOKEN not in result.stdout + result.stderr
+
+
+def test_token_never_appears_in_output_with_poetry_configured(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "primary")
     _runner_temp(tmp_path, monkeypatch)
     result = _run()
     assert result.exit_code == 0, result.stdout + result.stderr
@@ -305,3 +435,92 @@ def test_summary_lists_configured_managers(project: Path) -> None:
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "uv" in result.stderr
     assert "pnpm" in result.stderr
+
+
+def test_poetry_lookalike_gate_url_is_not_accepted_as_the_gate(project: Path) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(
+        project, "gate", "https://index.pkgwarden.com.evil.test/resolution/simple/", "primary"
+    )
+    result = _run()
+    assert result.exit_code == 1
+    assert "[[tool.poetry.source]]" in result.stderr
+    assert GATE_TOKEN not in result.stdout + result.stderr
+
+
+def test_poetry_second_resolvable_source_alongside_the_gate_fails(project: Path) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[tool.poetry]\nname = "x"\n\n'
+        f'[[tool.poetry.source]]\nname = "gate"\nurl = "{GATE_INDEX_URL}"\n'
+        'priority = "primary"\n\n'
+        '[[tool.poetry.source]]\nname = "public"\nurl = "https://pypi.org/simple/"\n'
+        'priority = "supplemental"\n',
+        encoding="utf-8",
+    )
+    result = _run()
+    assert result.exit_code == 1
+    assert "public" in result.stderr
+    assert 'priority = "explicit"' in result.stderr
+    assert GATE_TOKEN not in result.stdout + result.stderr
+
+
+def test_poetry_explicit_extra_source_alongside_the_gate_succeeds(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text(
+        '[tool.poetry]\nname = "x"\n\n'
+        f'[[tool.poetry.source]]\nname = "gate"\nurl = "{GATE_INDEX_URL}"\n'
+        'priority = "primary"\n\n'
+        '[[tool.poetry.source]]\nname = "torch"\nurl = "https://download.pytorch.org/whl/"\n'
+        'priority = "explicit"\n',
+        encoding="utf-8",
+    )
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert _env_lines(github_env)["POETRY_HTTP_BASIC_GATE_USERNAME"] == GATE_TOKEN
+
+
+def test_uv_lockfile_with_a_leftover_poetry_table_still_requires_a_gate_source(
+    project: Path,
+) -> None:
+    (project / "uv.lock").write_text("", encoding="utf-8")
+    (project / "pyproject.toml").write_text('[tool.poetry]\nname = "x"\n', encoding="utf-8")
+    result = _run()
+    assert result.exit_code == 1
+    assert "[[tool.poetry.source]]" in result.stderr
+
+
+def test_ci_setup_plan_rejects_secret_env_without_a_token_file() -> None:
+    with pytest.raises(ValidationError):
+        CiSetupPlan(
+            configured=["poetry"],
+            unsupported=[],
+            env={},
+            secret_env={"POETRY_HTTP_BASIC_GATE_USERNAME": "tok"},
+        )
+
+
+def test_poetry_legacy_default_priority_qualifies(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "default")
+    github_env = tmp_path / "github.env"
+    github_env.touch()
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    assert _env_lines(github_env)["POETRY_HTTP_BASIC_GATE_USERNAME"] == GATE_TOKEN
+
+
+def test_poetry_legacy_secondary_priority_does_not_qualify(project: Path) -> None:
+    (project / "poetry.lock").write_text("", encoding="utf-8")
+    _write_poetry_pyproject(project, "gate", GATE_INDEX_URL, "secondary")
+    result = _run()
+    assert result.exit_code == 1
+    assert "[[tool.poetry.source]]" in result.stderr

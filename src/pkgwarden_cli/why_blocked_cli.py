@@ -36,6 +36,7 @@ class WhyBlockedVulnerabilityReference(BaseModel):
 class WhyBlockedPolicyDetails(BaseModel):
     vulnerabilities: list[WhyBlockedVulnerabilityReference] = Field(default_factory=list)
     effective_moment_utc: datetime | None = None
+    quarantined_until_utc: datetime | None = None
 
 
 class WhyBlockedCveDetails(BaseModel):
@@ -44,7 +45,7 @@ class WhyBlockedCveDetails(BaseModel):
 
 class WhyBlockedExceptionDetails(BaseModel):
     exception_id: str
-    vulnerability_id: str
+    vulnerability_id: str | None = None
     created_by_email: str | None = None
     created_at: datetime | str | None = None
     expires_at: datetime | str | None = None
@@ -156,14 +157,21 @@ def _split_spec(spec: str, version_option: str | None) -> tuple[str, str]:
     return parsed.name, parsed.version
 
 
+_CARVE_OUT_LEADS = {
+    "allowed_by_exception": "allowed by exception",
+    "allowed_by_quarantine_rescue": "allowed by a quarantine rescue",
+}
+
+
 def format_why_blocked_human(
     name: str, version: str, ecosystem: str, payload: WhyBlockedResponse
 ) -> str:
     header = f"{name}=={version} ({ecosystem})"
     if not payload.blocked:
-        if payload.reason == "allowed_by_exception":
-            return f"{header}: {_format_allowed_by_exception(payload.details)}"
-        return f"{header}: available"
+        carve_out_lead = _CARVE_OUT_LEADS.get(payload.reason or "")
+        if carve_out_lead is None:
+            return f"{header}: available"
+        return f"{header}: {_format_allowed_by_carve_out(payload.details, carve_out_lead)}"
     reason = payload.reason
     details = payload.details
     if reason == "pending_approval":
@@ -183,6 +191,8 @@ def format_why_blocked_human(
         return f"{header}: unknown version on the registry — check the pin"
     if reason in ("scan_verdict", "known_malware") and isinstance(details, WhyBlockedScanDetails):
         return f"{header}: blocked - {_format_scan_verdict(details)}"
+    if reason == "quarantine" and isinstance(details, WhyBlockedPolicyDetails):
+        return f"{header}: {_format_quarantine(name, version, ecosystem, details)}"
     if isinstance(details, WhyBlockedCveDetails) and details.cves:
         return f"{header}: blocked ({reason}) - cves={details.cves}"
     if isinstance(details, WhyBlockedPolicyDetails) and (
@@ -193,7 +203,7 @@ def format_why_blocked_human(
     return f"{header}: blocked ({reason})"
 
 
-def _format_allowed_by_exception(
+def _format_allowed_by_carve_out(
     details: (
         WhyBlockedScanDetails
         | WhyBlockedPendingDetails
@@ -202,15 +212,31 @@ def _format_allowed_by_exception(
         | WhyBlockedExceptionDetails
         | None
     ),
+    lead: str,
 ) -> str:
     if not isinstance(details, WhyBlockedExceptionDetails):
-        return "allowed by exception"
-    parts = ["allowed by exception", f"id={details.exception_id}"]
+        return lead
+    parts = [lead, f"id={details.exception_id}"]
     if details.created_by_email:
         parts.append(f"by {details.created_by_email}")
     if details.expires_at:
         parts.append(f"expires {details.expires_at}")
     return " ".join(parts)
+
+
+def _format_quarantine(
+    name: str, version: str, ecosystem: str, details: WhyBlockedPolicyDetails
+) -> str:
+    """New releases wait out a quarantine window; say when it lifts and how to skip it."""
+    if details.quarantined_until_utc is None:
+        window = "blocked (quarantine)"
+    else:
+        window = f"quarantined until {details.quarantined_until_utc.date().isoformat()}"
+    hint = (
+        "an owner can rescue this exact version with `pw exception add --quarantine "
+        f"--ecosystem {ecosystem} --package {name} --version {version} --reason ...`"
+    )
+    return f"{window}; {hint}"
 
 
 def _format_scan_verdict(details: WhyBlockedScanDetails) -> str:

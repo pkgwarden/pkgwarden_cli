@@ -61,7 +61,11 @@ def test_gate_exception_add_posts_body(tmp_path: Path, monkeypatch) -> None:
         ["exception", "add", "-v", "CVE-2026-1", "-r", "not applicable"],
     )
     assert result.exit_code == 0, result.stdout + result.stderr
-    assert captured["json"] == {"vulnerability_id": "CVE-2026-1", "reason": "not applicable"}
+    assert captured["json"] == {
+        "kind": "cve",
+        "vulnerability_id": "CVE-2026-1",
+        "reason": "not applicable",
+    }
 
 
 @pytest.mark.skipif(

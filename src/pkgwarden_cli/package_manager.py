@@ -1,3 +1,4 @@
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -54,12 +55,32 @@ def _present(root: Path, name: str) -> bool:
     return (root / name).is_file()
 
 
+def _pyproject_declares_poetry(root: Path) -> bool:
+    try:
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError):
+        return False
+    tool = data.get("tool")
+    return isinstance(tool, dict) and isinstance(tool.get("poetry"), dict)
+
+
 def _detection_for(root: Path, manager: PackageManager) -> ManagerDetection | None:
     lockfile = _LOCKFILES[manager]
     ecosystem = _ECOSYSTEM[manager]
     if _present(root, lockfile):
         return ManagerDetection(manager=manager, ecosystem=ecosystem, lockfile=lockfile)
-    if manager == "uv" and _present(root, "pyproject.toml"):
+    if (
+        manager == "poetry"
+        and _present(root, "pyproject.toml")
+        and _pyproject_declares_poetry(root)
+    ):
+        return ManagerDetection(manager="poetry", ecosystem="pypi", lockfile=None)
+    if (
+        manager == "uv"
+        and _present(root, "pyproject.toml")
+        and not _present(root, "poetry.lock")
+        and not _pyproject_declares_poetry(root)
+    ):
         return ManagerDetection(manager="uv", ecosystem="pypi", lockfile=None)
     return None
 

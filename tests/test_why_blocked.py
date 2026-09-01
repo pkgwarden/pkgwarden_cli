@@ -429,3 +429,45 @@ def test_why_blocked_renders_unknown_version(tmp_path, monkeypatch) -> None:
     )
     assert result.exit_code == 0, result.stdout + result.stderr
     assert "unknown version" in result.stdout.lower()
+
+
+def test_why_blocked_renders_quarantine_with_the_rescue_hint(tmp_path, monkeypatch) -> None:
+    result = _invoke_with_payload(
+        monkeypatch,
+        {
+            "blocked": True,
+            "reason": "quarantine",
+            "details": {
+                "vulnerabilities": [],
+                "effective_moment_utc": "2026-08-10T00:00:00Z",
+                "quarantined_until_utc": "2026-08-24T00:00:00Z",
+            },
+        },
+    )
+    assert result.exit_code == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "quarantined until 2026-08-24" in out
+    assert "pw exception add --quarantine" in out
+    assert "--package flask --version 3.1.2" in out
+    assert "—" not in out
+
+
+def test_why_blocked_renders_allowed_by_quarantine_rescue(tmp_path, monkeypatch) -> None:
+    result = _invoke_with_payload(
+        monkeypatch,
+        {
+            "blocked": False,
+            "reason": "allowed_by_quarantine_rescue",
+            "details": {
+                "exception_id": "rescue-1",
+                "vulnerability_id": None,
+                "created_by_email": "owner@widgets.example",
+                "expires_at": None,
+            },
+        },
+    )
+    assert result.exit_code == 0, result.stdout + result.stderr
+    out = result.stdout
+    assert "quarantine rescue" in out
+    assert "rescue-1" in out
+    assert "owner@widgets.example" in out
