@@ -7,6 +7,7 @@ in its own process — without these env overrides every resolution 401s.
 import re
 import tempfile
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
@@ -110,9 +111,51 @@ def _npm_auth_scope(registry_base: str) -> str:
     return f"//{parsed.netloc}{scope_path}"
 
 
-def npmrc_for_registry(registry_base: str, registry_auth_token: str) -> str:
+NPM_CLIENT_RETRY_SETTINGS: tuple[tuple[str, str], ...] = (
+    ("fetch-retries", "5"),
+    ("fetch-retry-mintimeout", "2000"),
+    ("fetch-retry-maxtimeout", "60000"),
+)
+"""Retry settings every npm-family client reads from the user config file, so an install queues
+against the gate's per-token resolution ceiling instead of aborting on a 429. See walrus issue
+#981: pnpm's default ``fetch-retries`` is 2 and uv's default is 3, so four cold jobs sharing one
+token gave up long before the burst drained. Five retries backing off from 2 s to 60 s outlast a
+burst the gate is shedding."""
+
+NPM_CLIENT_CONCURRENCY_LIMIT = "8"
+"""In-flight requests per job. Four concurrent jobs then present about 32 requests against a
+production per-token share of 30, where pnpm's default of 16 presented about 64."""
+
+NPM_CLIENT_CONCURRENCY_KEYS: dict[PackageManager, str] = {
+    "npm": "maxsockets",
+    "pnpm": "network-concurrency",
+    "yarn": "network-concurrency",
+}
+"""Each client's own concurrency knob, written only for the managers actually configured: npm
+does not know ``network-concurrency`` and warns "Unknown user config" on it (verified against npm
+11.8.0), announcing that it will stop working in npm's next major, while pnpm ignores
+``maxsockets`` (verified against pnpm 9.15.9 and 10.34.2)."""
+
+
+def npm_client_pacing_settings(
+    managers: Iterable[PackageManager],
+) -> tuple[tuple[str, str], ...]:
+    keys = sorted(
+        {
+            NPM_CLIENT_CONCURRENCY_KEYS[manager]
+            for manager in managers
+            if manager in NPM_CLIENT_CONCURRENCY_KEYS
+        }
+    )
+    return tuple((key, NPM_CLIENT_CONCURRENCY_LIMIT) for key in keys) + NPM_CLIENT_RETRY_SETTINGS
+
+
+def npmrc_for_registry(
+    registry_base: str, registry_auth_token: str, managers: Iterable[PackageManager]
+) -> str:
     body = f"registry={registry_base}/\n"
-    return body + f"{_npm_auth_scope(registry_base)}:_authToken={registry_auth_token}\n"
+    body += f"{_npm_auth_scope(registry_base)}:_authToken={registry_auth_token}\n"
+    return body + "".join(f"{key}={value}\n" for key, value in npm_client_pacing_settings(managers))
 
 
 _NPMRC_TEMP_PREFIX = "pkgwarden-npmrc-"
@@ -144,7 +187,7 @@ def _npm_family_auth_env(
     config: CliConfig, manager: PackageManager, username: str
 ) -> dict[str, str]:
     registry_base = npm_registry_base(config.api_base)
-    npmrc_path = _write_temp_npmrc(npmrc_for_registry(registry_base, username))
+    npmrc_path = _write_temp_npmrc(npmrc_for_registry(registry_base, username, (manager,)))
     env = {"NPM_CONFIG_USERCONFIG": str(npmrc_path)}
     if manager == "yarn":
         env["YARN_NPM_REGISTRY_SERVER"] = registry_base

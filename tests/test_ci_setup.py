@@ -524,3 +524,69 @@ def test_poetry_legacy_secondary_priority_does_not_qualify(project: Path) -> Non
     result = _run()
     assert result.exit_code == 1
     assert "[[tool.poetry.source]]" in result.stderr
+
+
+def test_pnpm_npmrc_carries_the_client_pacing_settings(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    runner_temp = _runner_temp(tmp_path, monkeypatch)
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    lines = (runner_temp / "pkgwarden.npmrc").read_text(encoding="utf-8").splitlines()
+    assert f"//index.pkgwarden.com/resolution/npm/:_authToken={GATE_TOKEN}" in lines
+    assert lines[-4:] == [
+        "network-concurrency=8",
+        "fetch-retries=5",
+        "fetch-retry-mintimeout=2000",
+        "fetch-retry-maxtimeout=60000",
+    ]
+
+
+def test_npm_npmrc_paces_with_the_key_npm_itself_knows(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """npm warns "Unknown user config" on pnpm's ``network-concurrency`` and announces that it
+    will stop working, so an npm-only project gets ``maxsockets`` instead."""
+    (project / "package-lock.json").write_text("{}", encoding="utf-8")
+    runner_temp = _runner_temp(tmp_path, monkeypatch)
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    lines = (runner_temp / "pkgwarden.npmrc").read_text(encoding="utf-8").splitlines()
+    assert lines[-4:] == [
+        "maxsockets=8",
+        "fetch-retries=5",
+        "fetch-retry-mintimeout=2000",
+        "fetch-retry-maxtimeout=60000",
+    ]
+
+
+def test_npmrc_paces_both_clients_when_both_lockfiles_are_present(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "package-lock.json").write_text("{}", encoding="utf-8")
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    runner_temp = _runner_temp(tmp_path, monkeypatch)
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    lines = (runner_temp / "pkgwarden.npmrc").read_text(encoding="utf-8").splitlines()
+    assert "maxsockets=8" in lines
+    assert "network-concurrency=8" in lines
+
+
+def test_python_env_asks_uv_and_pip_to_retry(
+    project: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (project / "uv.lock").write_text("", encoding="utf-8")
+    _runner_temp(tmp_path, monkeypatch)
+    github_env = tmp_path / "github.env"
+    github_env.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    result = _run()
+    assert result.exit_code == 0, result.stdout + result.stderr
+    variables = _env_lines(github_env)
+    assert variables["UV_HTTP_RETRIES"] == "5"
+    assert variables["PIP_RETRIES"] == "5"
+    assert variables["UV_DEFAULT_INDEX"] == GATE_INDEX_URL
+    assert variables["PIP_INDEX_URL"] == GATE_INDEX_URL
+    assert "NETRC" in variables

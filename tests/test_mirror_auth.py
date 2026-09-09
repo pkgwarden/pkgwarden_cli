@@ -1,7 +1,15 @@
+import stat
 from pathlib import Path
 
-from pkgwarden_cli.config import CliConfig
-from pkgwarden_cli.mirror_auth import cleanup_native_auth_env, native_auth_env, poetry_gate_sources
+from pkgwarden_cli.config import CliConfig, PackageManager
+from pkgwarden_cli.mirror_auth import (
+    NPM_CLIENT_RETRY_SETTINGS,
+    cleanup_native_auth_env,
+    native_auth_env,
+    npm_client_pacing_settings,
+    npmrc_for_registry,
+    poetry_gate_sources,
+)
 
 
 def _config(**overrides) -> CliConfig:
@@ -214,3 +222,46 @@ def test_gate_source_under_a_path_prefixed_deployment_is_matched(tmp_path: Path)
 def test_sibling_path_of_a_path_prefixed_deployment_is_not_matched(tmp_path: Path) -> None:
     _write_poetry_pyproject(tmp_path, "gate", "https://host.test/pkgwarden-evil/simple/", "primary")
     assert poetry_gate_sources(tmp_path / "pyproject.toml", "https://host.test/pkgwarden") == []
+
+
+def test_npmrc_paces_the_client_after_the_auth_line() -> None:
+    npmrc = npmrc_for_registry("https://gate.test/resolution/npm", "tok", ("pnpm",))
+    lines = npmrc.splitlines()
+    assert lines[0] == "registry=https://gate.test/resolution/npm/"
+    assert lines[1] == "//gate.test/resolution/npm/:_authToken=tok"
+    assert lines[2:] == [f"{key}={value}" for key, value in npm_client_pacing_settings(("pnpm",))]
+
+
+def test_pacing_settings_are_the_reviewed_numbers() -> None:
+    assert dict(npm_client_pacing_settings(("pnpm",))) == {
+        "network-concurrency": "8",
+        "fetch-retries": "5",
+        "fetch-retry-mintimeout": "2000",
+        "fetch-retry-maxtimeout": "60000",
+    }
+
+
+def test_pacing_uses_maxsockets_for_npm_which_warns_on_network_concurrency() -> None:
+    """npm 11 warns "Unknown user config" on ``network-concurrency`` and says it will stop
+    working in the next major, so npm gets its own socket cap instead."""
+    settings = dict(npm_client_pacing_settings(("npm",)))
+    assert settings["maxsockets"] == "8"
+    assert "network-concurrency" not in settings
+
+
+def test_pacing_carries_both_concurrency_keys_when_both_clients_are_configured() -> None:
+    settings = dict(npm_client_pacing_settings(("npm", "pnpm", "yarn")))
+    assert settings["maxsockets"] == "8"
+    assert settings["network-concurrency"] == "8"
+
+
+def test_pacing_always_carries_the_retry_settings() -> None:
+    npm_family: tuple[PackageManager, ...] = ("npm", "pnpm", "yarn")
+    for manager in npm_family:
+        assert set(NPM_CLIENT_RETRY_SETTINGS) <= set(npm_client_pacing_settings((manager,)))
+
+
+def test_temp_npmrc_holding_the_token_is_private_to_its_owner(tmp_path: Path) -> None:
+    env = native_auth_env(_config(), "npm", tmp_path)
+    userconfig = Path(env["NPM_CONFIG_USERCONFIG"])
+    assert stat.S_IMODE(userconfig.stat().st_mode) == 0o600

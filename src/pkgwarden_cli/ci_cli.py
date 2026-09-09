@@ -94,6 +94,9 @@ def _unsupported_reason(manager: PackageManager, cwd: Path) -> str | None:
     return None
 
 
+PYTHON_CLIENT_RETRIES = 5
+
+
 def _python_env(config: CliConfig, token: str, config_dir: Path) -> dict[str, str]:
     index_url = simple_index_url(config.api_base, config.mode)
     host = urlsplit(index_url).hostname or ""
@@ -106,6 +109,10 @@ def _python_env(config: CliConfig, token: str, config_dir: Path) -> dict[str, st
         # UV_INDEX would only ADD an index and leave PyPI as a fallback, defeating the gate.
         "UV_DEFAULT_INDEX": index_url,
         "PIP_INDEX_URL": index_url,
+        # walrus issue #981: uv retries 3 times by default, which a cold multi-job burst
+        # against the gate's per-token ceiling exhausts. Both are the tools' own variables.
+        "UV_HTTP_RETRIES": str(PYTHON_CLIENT_RETRIES),
+        "PIP_RETRIES": str(PYTHON_CLIENT_RETRIES),
     }
 
 
@@ -168,14 +175,16 @@ def _poetry_env(
     return env, secret_env, token_path
 
 
-def _npm_env(config: CliConfig, token: str, config_dir: Path, include_yarn: bool) -> dict[str, str]:
+def _npm_env(
+    config: CliConfig, token: str, config_dir: Path, managers: list[PackageManager]
+) -> dict[str, str]:
     registry_base = npm_registry_base(config.api_base)
     npmrc = _write_private(
         config_dir / NPMRC_FILENAME,
-        npmrc_for_registry(registry_base, token),
+        npmrc_for_registry(registry_base, token, managers),
     )
     env = {"NPM_CONFIG_USERCONFIG": str(npmrc)}
-    if include_yarn:
+    if "yarn" in managers:
         env["YARN_NPM_REGISTRY_SERVER"] = registry_base
     return env
 
@@ -198,8 +207,11 @@ def build_plan(config: CliConfig, token: str, cwd: Path, config_dir: Path) -> Ci
         secret_env.update(poetry_secret_env)
     if any(manager in ("uv", "pip") for manager in supported):
         env.update(_python_env(config, token, config_dir))
-    if any(ecosystem_for_manager(manager) == "npm" for manager in supported):
-        env.update(_npm_env(config, token, config_dir, "yarn" in supported))
+    npm_managers: list[PackageManager] = [
+        manager for manager in supported if ecosystem_for_manager(manager) == "npm"
+    ]
+    if npm_managers:
+        env.update(_npm_env(config, token, config_dir, npm_managers))
     return CiSetupPlan(
         configured=supported,
         unsupported=unsupported,
