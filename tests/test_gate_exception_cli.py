@@ -137,3 +137,51 @@ def test_gate_exception_list_forwards_query_params(tmp_path: Path, monkeypatch) 
         "include_expired": "false",
         "vulnerability_id": "CVE-x",
     }
+
+
+ROUTE_MISS_HINT = "The API at https://gate.test/api/v1 does not serve the exceptions API."
+
+
+def _respond_with(monkeypatch, status: int, body: dict[str, str]) -> None:
+    real_build = http_mod.build_api_client
+    transport = httpx.MockTransport(lambda request: httpx.Response(status, json=body))
+    monkeypatch.setattr(
+        http_mod, "build_api_client", lambda **kwargs: real_build(**kwargs, transport=transport)
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["exception", "add", "-v", "CVE-2026-1", "-r", "x"],
+        ["exception", "list"],
+        ["exception", "show", "exc-1"],
+        ["exception", "remove", "exc-1"],
+    ],
+)
+def test_route_miss_404_points_at_the_configured_api_base(
+    tmp_path: Path, monkeypatch, command: list[str]
+) -> None:
+    _gate_env(tmp_path, monkeypatch)
+    _respond_with(monkeypatch, 404, {"detail": "Not Found"})
+    result = CliRunner().invoke(main_module.app, command)
+    assert result.exit_code == 1
+    assert "Not Found" in result.stderr
+    assert ROUTE_MISS_HINT in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("command", "status", "detail"),
+    [
+        (["exception", "show", "exc-1"], 404, "Exception not found"),
+        (["exception", "add", "-v", "CVE-2026-1", "-r", "x"], 403, "Owner role required"),
+    ],
+)
+def test_other_errors_print_the_server_detail_unchanged(
+    tmp_path: Path, monkeypatch, command: list[str], status: int, detail: str
+) -> None:
+    _gate_env(tmp_path, monkeypatch)
+    _respond_with(monkeypatch, status, {"detail": detail})
+    result = CliRunner().invoke(main_module.app, command)
+    assert result.exit_code == 1
+    assert result.stderr.strip() == detail

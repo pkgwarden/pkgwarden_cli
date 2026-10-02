@@ -43,6 +43,17 @@ def _api_client(runtime: CliRuntime, token: str) -> httpx.Client:
     )
 
 
+def _exception_http_error_message(exc: httpx.HTTPStatusError, api_base: str) -> str:
+    message = http_client.http_error_message(exc)
+    # FastAPI's bare route-miss, as opposed to a handler's "Exception not found".
+    if exc.response.status_code != 404 or message != "Not Found":
+        return message
+    return (
+        f"{message}\nThe API at {api_base} does not serve the exceptions API. Check "
+        "`pw init --api-url` points at your gate origin, and that the gate server is current."
+    )
+
+
 def _scope_body(
     *,
     ecosystem: str | None,
@@ -134,7 +145,7 @@ def gate_exception_add(
         response.raise_for_status()
         data = GateExceptionResponse.model_validate(response.json())
     except httpx.HTTPStatusError as exc:
-        typer.echo(http_client.http_error_message(exc), err=True)
+        typer.echo(_exception_http_error_message(exc, runtime.config.api_base), err=True)
         raise typer.Exit(1) from exc
     finally:
         client.close()
@@ -161,7 +172,7 @@ def gate_exception_list(
         response.raise_for_status()
         parsed = GateExceptionListResponse.model_validate(response.json())
     except httpx.HTTPStatusError as exc:
-        typer.echo(http_client.http_error_message(exc), err=True)
+        typer.echo(_exception_http_error_message(exc, runtime.config.api_base), err=True)
         raise typer.Exit(1) from exc
     finally:
         client.close()
@@ -184,7 +195,7 @@ def gate_exception_show(ctx: typer.Context, exception_id: str = typer.Argument(.
         response.raise_for_status()
         data = GateExceptionResponse.model_validate(response.json())
     except httpx.HTTPStatusError as exc:
-        typer.echo(http_client.http_error_message(exc), err=True)
+        typer.echo(_exception_http_error_message(exc, runtime.config.api_base), err=True)
         raise typer.Exit(1) from exc
     finally:
         client.close()
@@ -199,7 +210,7 @@ def gate_exception_remove(ctx: typer.Context, exception_id: str = typer.Argument
         response = client.delete(f"/exceptions/{exception_id}")
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        typer.echo(http_client.http_error_message(exc), err=True)
+        typer.echo(_exception_http_error_message(exc, runtime.config.api_base), err=True)
         raise typer.Exit(1) from exc
     finally:
         client.close()

@@ -259,6 +259,8 @@ def lock(
     manager_override: str | None = typer.Option(None, "--manager"),
 ) -> None:
     """Refresh the native lockfile against the gated mirror."""
+    if ctx.invoked_subcommand:
+        return
     runtime: CliRuntime = ctx.find_root().obj["runtime"]
     cwd = Path.cwd()
     manager = _resolve_manager(runtime, manager_override, cwd)
@@ -342,4 +344,3 @@ def format_enterprise_add_pending(spec: str, outcome: enterprise_hooks.Enterpris
 def register_add(app: typer.Typer) -> None:
     app.command("add")(add)
     app.command("remove")(remove)
-    app.command("lock")(lock)

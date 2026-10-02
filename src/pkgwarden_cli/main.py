@@ -9,6 +9,7 @@ from pkgwarden_cli.config import load_cli_config
 from pkgwarden_cli.doctor import register_doctor
 from pkgwarden_cli.gate_exception_cli import register_gate_exception
 from pkgwarden_cli.init_cli import register_init
+from pkgwarden_cli.lock_cli import register_lock
 from pkgwarden_cli.plugin_loader import load_enterprise_plugins
 from pkgwarden_cli.resolution_insights_cli import register_resolution_insights
 from pkgwarden_cli.runtime import CliRuntime
@@ -84,6 +85,7 @@ register_sync(app)
 register_add(app)
 register_why_blocked(app)
 register_gate_exception(app)
+register_lock(app)
 register_resolution_insights(app)
 register_vscode(app)
 register_ci(app)
